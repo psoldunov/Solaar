@@ -162,6 +162,10 @@ class EventsListener(threading.Thread):
                     self._notifications_callback(n)
                 except Exception:
                     logger.exception("processing %s", n)
+            try:
+                self.tick()
+            except Exception:
+                logger.exception("%s: timed work", self)
 
         del self._queued_notifications
         self.has_stopped()
@@ -177,6 +181,13 @@ class EventsListener(threading.Thread):
 
     def has_stopped(self):
         """Called right before the thread stops."""
+        pass
+
+    def tick(self):
+        """Called on the listener thread after every pass of the read loop,
+        which waits at most _EVENT_READ_TIMEOUT seconds for a packet. For
+        timed work that has to run on this thread, in order with the
+        notifications."""
         pass
 
     def _notifications_hook(self, n):

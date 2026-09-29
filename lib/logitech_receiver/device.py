@@ -591,6 +591,11 @@ class Device:
             battery = self.battery()
             self.set_battery_info(battery if battery is not None else Battery(None, None, None, None))
 
+    @property
+    def activated(self) -> bool:
+        """Whether the device was set up (settings pushed, battery read) since it last connected."""
+        return bool(self._active)
+
     def changed(self, active=None, alert=Alert.NONE, reason=None, push=False):
         """The status of the device had changed, so invoke the status callback.
         Also push notifications and settings to the device when necessary."""
