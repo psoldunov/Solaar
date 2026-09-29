@@ -136,6 +136,25 @@ def test_process_hidpp10_notification(hidpp_notification, expected):
 
 
 @pytest.mark.parametrize(
+    "address, data, expected",
+    [
+        (0x10, b"\x02\x34\xb0", (True, True)),  # Bolt mouse linked, Bolt links are always encrypted
+        (0x10, b"\x42\x34\xb0", (False, True)),  # Bolt mouse link lost
+        (0x04, b"\x22\x34\x40", (True, True)),  # Unifying, encrypted link
+        (0x04, b"\x02\x34\x40", (True, False)),
+        (0x04, b"\x62\x34\x40", (False, True)),
+        (0x02, b"\x80\x00\x10", (True, True)),  # 27 MHz links are always up, bit 7 is encryption
+        (0x02, b"\x40\x00\x10", (True, False)),
+        (0x00, b"\x02\x34\xb0", None),  # unknown protocol
+    ],
+)
+def test_connection_state(address, data, expected):
+    notification = HIDPPNotification(0x10, 1, Notification.DJ_PAIRING, address, data)
+
+    assert notifications.connection_state(notification) == expected
+
+
+@pytest.mark.parametrize(
     "hidpp_notification, feature",
     [
         (

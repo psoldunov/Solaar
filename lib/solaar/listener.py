@@ -65,6 +65,21 @@ def _ghost(device):
     )
 
 
+# A receiver can report a device's link before the device answers requests, e.g. while the device
+# reconnects to a receiver that just came back through a USB switch. Setting the device up then fails
+# part way and leaves it offline until its link drops again, so wait until it answers, trying again
+# after each of these delays (in seconds).
+_ACTIVATION_RETRY_DELAYS = (0.5, 1, 2, 4, 8)
+
+
+def _answers(device) -> bool:
+    """Ping a device, counting a receiver that does not know it as no answer."""
+    try:
+        return bool(device.ping())
+    except exceptions.NoSuchDevice:
+        return False
+
+
 class SolaarListener(listener.EventsListener):
     """Keeps the status of a Receiver or Device (member name is receiver but it can also be a device)."""
 
@@ -72,6 +87,7 @@ class SolaarListener(listener.EventsListener):
         assert status_changed_callback
         super().__init__(receiver, self._notifications_handler)
         self.status_changed_callback = status_changed_callback
+        self._pending_activations = {}  # device number -> (time of next attempt, attempts made)
         receiver.status_callback = self._status_changed
 
     def has_started(self):
@@ -228,8 +244,9 @@ class SolaarListener(listener.EventsListener):
             dev.status_callback = self._status_changed
             # the receiver changed status as well
             self._status_changed(self.receiver)
-
-        notifications.process(dev, n)
+            self._process_connection(dev, n)
+        else:
+            notifications.process(dev, n)
 
         if self.receiver.pairing.lock_open and not already_known:
             # this should be the first notification after a device was paired
@@ -238,6 +255,46 @@ class SolaarListener(listener.EventsListener):
             self.receiver.pairing.new_device = dev
         elif dev.online is None:
             dev.ping()
+
+    def _process_connection(self, dev, n):
+        """Process a device connection notification, but hold back setting up a
+        newly linked device until it answers (see _ACTIVATION_RETRY_DELAYS)."""
+        state = notifications.connection_state(n)
+        # 27 MHz notifications carry no link state, and their devices may not answer pings
+        link_up = state is not None and state[0] and n.address != 0x02
+        if link_up and not dev.activated and not _answers(dev):
+            logger.info("%s: %s is linked but does not answer yet, setting it up later", self.receiver, dev)
+            dev.link_encrypted = state[1]
+            dev.changed(active=False)
+            self._schedule_activation(dev.number, 0)
+            return
+        self._pending_activations.pop(dev.number, None)
+        notifications.process(dev, n)
+
+    def _schedule_activation(self, number, attempts):
+        if attempts < len(_ACTIVATION_RETRY_DELAYS):
+            self._pending_activations[number] = (time.time() + _ACTIVATION_RETRY_DELAYS[attempts], attempts + 1)
+        else:
+            logger.warning(
+                "%s: device %d is linked but does not answer, setting it up when it reconnects", self.receiver, number
+            )
+
+    def _retry_activation(self, number, attempts):
+        dev = self.receiver[number] if number in self.receiver else None
+        if dev is None or dev.activated:
+            return  # unpaired, or set up by a notification in the meantime
+        if _answers(dev):
+            logger.info("%s: %s answers now, setting it up", self.receiver, dev)
+            dev.changed(active=True)
+        else:
+            self._schedule_activation(number, attempts)
+
+    def tick(self):
+        now = time.time()
+        for number, (due, attempts) in list(self._pending_activations.items()):
+            if now >= due:
+                del self._pending_activations[number]
+                self._retry_activation(number, attempts)
 
     def _handle_centurion_notification(self, n):
         """Handle notifications from a CenturionReceiver dongle.

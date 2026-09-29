@@ -173,6 +173,18 @@ def _process_hidpp10_custom_notification(device: Device, notification: HIDPPNoti
     logger.warning("%s: unrecognized %s", device, notification)
 
 
+def connection_state(notification: HIDPPNotification) -> tuple[bool, bool] | None:
+    """Link state reported by a HID++ 1.0 device connection notification.
+
+    Returns (link established, link encrypted), or None for an unknown protocol."""
+    flags = ord(notification.data[:1]) & 0xF0
+    if notification.address == 0x02:  # very old 27 MHz protocol
+        return True, bool(flags & 0x80)
+    if notification.address > 0x00:  # all other protocols are supposed to be almost the same
+        return not (flags & 0x40), bool(flags & 0x20) or notification.address == 0x10  # Bolt protocol always encrypted
+    return None
+
+
 def _process_hidpp10_notification(device: Device, notification: HIDPPNotification):
     if notification.sub_id == Notification.CONNECT_DISCONNECT:  # device unpairing
         if notification.address == 0x02:
@@ -187,20 +199,18 @@ def _process_hidpp10_notification(device: Device, notification: HIDPPNotificatio
         return True
 
     if notification.sub_id == Notification.DJ_PAIRING:  # device connection (and disconnection)
-        flags = ord(notification.data[:1]) & 0xF0
-        if notification.address == 0x02:  # very old 27 MHz protocol
-            wpid = "00" + common.strhex(notification.data[2:3])
-            link_established = True
-            link_encrypted = bool(flags & 0x80)
-        elif notification.address > 0x00:  # all other protocols are supposed to be almost the same
-            wpid = common.strhex(notification.data[2:3] + notification.data[1:2])
-            link_established = not (flags & 0x40)
-            link_encrypted = bool(flags & 0x20) or notification.address == 0x10  # Bolt protocol always encrypted
-        else:
+        state = connection_state(notification)
+        if state is None:
             logger.warning(
                 "%s: connection notification with unknown protocol %02X: %s", device.number, notification.address, notification
             )
             return True
+        link_established, link_encrypted = state
+        flags = ord(notification.data[:1]) & 0xF0
+        if notification.address == 0x02:  # very old 27 MHz protocol
+            wpid = "00" + common.strhex(notification.data[2:3])
+        else:
+            wpid = common.strhex(notification.data[2:3] + notification.data[1:2])
         if wpid != device.wpid:
             logger.warning("%s wpid mismatch, got %s", device, wpid)
         if logger.isEnabledFor(logging.DEBUG):
